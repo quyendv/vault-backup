@@ -1,0 +1,35 @@
+# Vault backup container: one-shot or in-container schedule (SCHEDULE + supercronic).
+#
+# One-shot:
+#   cp .env.example .env   # then edit
+#   docker compose run --rm vault-backup
+#   docker compose run --rm vault-backup --dry-run
+#
+# Scheduled (supercronic):
+#   Set SCHEDULE in .env, e.g. SCHEDULE="0 */4 * * *"
+#   Set RESTART_POLICY=unless-stopped in .env
+#   docker compose up -d
+#
+# From the container, VAULT_ADDR must reach a real Vault listener (not 127.0.0.1
+# unless Vault shares that network). For Vault on the Docker host:
+#   VAULT_ADDR=http://host.docker.internal:8200  (extra_hosts below helps on Linux)
+
+services:
+  vault-backup:
+    image: ghcr.io/quyendv/vault-backup:latest
+    container_name: vault-backup
+    env_file:
+      - .env
+    environment:
+      BACKUP_DIR: /backup
+      LOG_FILE: /backup/vault-backup.log
+    volumes:
+      - vault_backup_data:${BACKUP_DIR}
+      # If using VAULT_TOKEN_FILE in .env, mount the token file, e.g.:
+      # - ./secrets/backup-token:/etc/vault/backup-token:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: ${RESTART_POLICY:-no}
+
+volumes:
+  vault_backup_data:

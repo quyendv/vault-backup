@@ -1,0 +1,70 @@
+# Vault Raft backup — Kubernetes CronJob (one-shot job per schedule; do not set SCHEDULE in the container).
+#
+# Image (public example): ghcr.io/quyendv/vault-backup:latest
+# Private registry: add imagePullSecrets to the pod template.
+#
+# 1) Create a Secret whose keys match environment variable names consumed by vault-backup.sh:
+#
+#    kubectl create secret generic vault-backup-env \
+#      --from-literal=VAULT_TOKEN=hvs.xxx \
+#      --from-literal=S3_BUCKET=my-bucket \
+#      --from-literal=S3_ACCESS_KEY=xxx \
+#      --from-literal=S3_SECRET_KEY=xxx \
+#      --from-literal=S3_ENDPOINT=https://minio.example.com \
+#      --from-literal=S3_REGION=us-east-1
+#
+#    Optional keys: S3_PREFIX, RETENTION_LOCAL_DAYS, RETENTION_S3_DAYS, etc.
+#
+# 2) Adjust VAULT_ADDR to your Vault Service DNS name and port.
+#
+# 3) kubectl apply -f cronjob.yaml
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-backup
+  labels:
+    app.kubernetes.io/name: vault-backup
+spec:
+  schedule: "0 */4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: vault-backup
+        spec:
+          restartPolicy: OnFailure
+          # imagePullSecrets:
+          #   - name: ghcr-pull
+          containers:
+            - name: backup
+              image: ghcr.io/quyendv/vault-backup:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: VAULT_ADDR
+                  value: "http://vault.vault.svc.cluster.local:8200"
+                - name: BACKUP_DIR
+                  value: "/backup"
+                - name: LOG_FILE
+                  value: "/backup/vault-backup.log"
+              envFrom:
+                - secretRef:
+                    name: vault-backup-env
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 1Gi
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              emptyDir: {}

@@ -1,0 +1,13 @@
+# Local secrets and runtime config
+.env
+secrets/
+*.pem
+
+# Logs and scratch
+*.log
+/tmp/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
