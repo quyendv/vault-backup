@@ -37,7 +37,8 @@ Usage: $(basename "$0") [OPTIONS]
 
 Options:
   --file PATH       Restore from a local .snap or .snap.gz file
-  --s3-key KEY      Restore a specific object (filename only; S3_PREFIX applied)
+  --s3-key KEY      RUN/vault-snapshot-....snap.gz under S3_PREFIX, or basename only if it
+                    contains vault-snapshot-<RUN>.snap.gz (RUN = YYYYMMDD_HHMMSS)
   --latest          Download and restore the newest snapshot from S3
   --force           Skip confirmation prompt
   -h, --help        Show this help
@@ -78,25 +79,22 @@ normalize_prefix() {
   echo "$p"
 }
 
-s3_object_key() {
-  local filename="$1"
+# Relative path under S3_PREFIX (e.g. 20260305_020000/vault-snapshot-....snap.gz)
+s3_key_under_prefix() {
+  local rel="${1#/}"
   local prefix
   prefix=$(normalize_prefix "$S3_PREFIX")
   if [[ -n "$prefix" ]]; then
-    echo "${prefix}/${filename}"
+    echo "${prefix}/${rel}"
   else
-    echo "${filename}"
+    echo "${rel}"
   fi
 }
 
-s3_strip_prefix() {
-  local key="$1"
-  local prefix
-  prefix=$(normalize_prefix "$S3_PREFIX")
-  if [[ -n "$prefix" ]]; then
-    echo "${key#${prefix}/}"
-  else
-    echo "$key"
+snap_ts_from_basename() {
+  local f="$1"
+  if [[ "$f" =~ vault-snapshot-([0-9]{8}_[0-9]{6})\.snap\.gz$ ]]; then
+    echo "${BASH_REMATCH[1]}"
   fi
 }
 
@@ -148,21 +146,23 @@ get_latest_s3_key() {
 
   log "Scanning s3://${S3_BUCKET}/${prefix_arg} for latest snapshot"
 
+  local runs=() line
   # shellcheck disable=SC2046
-  local LATEST_LINE
-  LATEST_LINE=$(aws s3 ls $(s3_args) "s3://${S3_BUCKET}/${prefix_arg}" 2>/dev/null \
-    | grep "vault-snapshot-.*\.snap\.gz$" \
-    | sort \
-    | tail -1)
+  while IFS= read -r line; do
+    [[ "$line" =~ PRE[[:space:]]+([0-9]{8}_[0-9]{6})/ ]] && runs+=("${BASH_REMATCH[1]}")
+  done < <(aws s3 ls $(s3_args) "s3://${S3_BUCKET}/${prefix_arg}" --delimiter / 2>/dev/null || true)
 
-  [[ -n "$LATEST_LINE" ]] || die "No snapshots found in s3://${S3_BUCKET}/${prefix_arg}"
+  [[ ${#runs[@]} -gt 0 ]] || die "No run folders (YYYYMMDD_HHMMSS/) under s3://${S3_BUCKET}/${prefix_arg}"
 
-  local FILENAME
-  FILENAME=$(echo "$LATEST_LINE" | awk '{print $NF}')
-  local FULL_KEY="${prefix_arg}${FILENAME}"
-
-  log "Latest: s3://${S3_BUCKET}/${FULL_KEY}"
-  echo "$FULL_KEY"
+  local latest_run inner_line filename
+  latest_run=$(printf '%s\n' "${runs[@]}" | sort | tail -1)
+  # shellcheck disable=SC2046
+  inner_line=$(aws s3 ls $(s3_args) "s3://${S3_BUCKET}/${prefix_arg}${latest_run}/" 2>/dev/null \
+    | grep '\.snap\.gz$' | sort | tail -1)
+  [[ -n "$inner_line" ]] || die "No .snap.gz inside s3://${S3_BUCKET}/${prefix_arg}${latest_run}/"
+  filename=$(echo "$inner_line" | awk '{print $NF}')
+  log "Latest: s3://${S3_BUCKET}/${prefix_arg}${latest_run}/${filename}"
+  echo "${prefix_arg}${latest_run}/${filename}"
 }
 
 download_from_s3() {
@@ -273,7 +273,13 @@ if $USE_LATEST; then
 
 elif [[ -n "$S3_KEY_ARG" ]]; then
   [[ -n "$S3_BUCKET" ]] || die "--s3-key requires S3_BUCKET to be set"
-  full_key=$(s3_object_key "$(basename "$S3_KEY_ARG")")
+  if [[ "$S3_KEY_ARG" == */* ]]; then
+    full_key=$(s3_key_under_prefix "$S3_KEY_ARG")
+  else
+    ts=$(snap_ts_from_basename "$S3_KEY_ARG")
+    [[ -n "$ts" ]] || die "--s3-key must be RUN/snapshot.snap.gz or vault-snapshot-<RUN>.snap.gz"
+    full_key=$(s3_key_under_prefix "${ts}/${S3_KEY_ARG}")
+  fi
   LOCAL_FILE=$(download_from_s3 "$full_key")
 fi
 

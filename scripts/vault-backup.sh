@@ -73,16 +73,20 @@ normalize_prefix() {
   echo "$p"
 }
 
-# Build object key: prefix=vault-snapshots, file=snap.gz -> vault-snapshots/snap.gz
-s3_object_key() {
-  local filename="$1"
+# Per-run folder: S3_PREFIX/TIMESTAMP/ (snapshot + checksum inside).
+s3_run_base_key() {
   local prefix
   prefix=$(normalize_prefix "$S3_PREFIX")
   if [[ -n "$prefix" ]]; then
-    echo "${prefix}/${filename}"
+    echo "${prefix}/${TIMESTAMP}"
   else
-    echo "${filename}"
+    echo "${TIMESTAMP}"
   fi
+}
+
+s3_object_key_in_run() {
+  local filename="$1"
+  echo "$(s3_run_base_key)/${filename}"
 }
 
 # ---------------------------------------------------------------------------
@@ -180,8 +184,8 @@ upload_to_s3() {
   local CHECKSUM_FILE="$2"
 
   local OBJ_KEY SUM_KEY
-  OBJ_KEY=$(s3_object_key "$SNAPSHOT_GZ")
-  SUM_KEY=$(s3_object_key "${SNAPSHOT_GZ}.sha256")
+  OBJ_KEY=$(s3_object_key_in_run "$SNAPSHOT_GZ")
+  SUM_KEY=$(s3_object_key_in_run "${SNAPSHOT_GZ}.sha256")
 
   local DEST="s3://${S3_BUCKET}/${OBJ_KEY}"
   log "Uploading -> $DEST"
@@ -211,11 +215,20 @@ cleanup_local() {
   fi
 }
 
+# Parse Ymd_HMS folder name to epoch (GNU date); returns 0 on failure.
+run_folder_to_epoch() {
+  local r="$1"
+  [[ "$r" =~ ^[0-9]{8}_[0-9]{6}$ ]] || { echo 0; return; }
+  date -d "${r:0:4}-${r:4:2}-${r:6:2} ${r:9:2}:${r:11:2}:${r:13:2}" +%s 2>/dev/null \
+    || date -j -f "%Y-%m-%d %H:%M:%S" "${r:0:4}-${r:4:2}-${r:6:2} ${r:9:2}:${r:11:2}:${r:13:2}" +%s 2>/dev/null \
+    || echo 0
+}
+
 cleanup_s3() {
-  log "Cleaning S3 objects older than ${RETENTION_S3_DAYS} days in s3://${S3_BUCKET}/$(normalize_prefix "$S3_PREFIX")"
+  log "Cleaning S3 run folders under s3://${S3_BUCKET}/$(normalize_prefix "$S3_PREFIX")"
 
   if $DRY_RUN; then
-    log "[DRY RUN] Would prune S3 objects older than ${RETENTION_S3_DAYS} days"
+    log "[DRY RUN] Would prune run folders older than ${RETENTION_S3_DAYS} days"
     return
   fi
 
@@ -227,22 +240,20 @@ cleanup_s3() {
   PREFIX_ARG=$(normalize_prefix "$S3_PREFIX")
   [[ -n "$PREFIX_ARG" ]] && PREFIX_ARG="${PREFIX_ARG}/"
 
-  # aws s3 ls: "2024-09-01 02:00:05   123456 vault-snapshot-....snap.gz"
+  # PREFIX_ARG/<Ymd_HMS>/ contains .snap.gz + .sha256 — remove the whole prefix when old.
   # shellcheck disable=SC2046
-  aws s3 ls $(s3_args) "s3://${S3_BUCKET}/${PREFIX_ARG}" 2>/dev/null \
-    | grep "vault-snapshot-" \
-    | while read -r DATE TIME _SIZE FILENAME; do
-        local OBJ_EPOCH
-        OBJ_EPOCH=$(date -d "${DATE} ${TIME}" +%s 2>/dev/null \
-          || date -j -f "%Y-%m-%d %H:%M:%S" "${DATE} ${TIME}" +%s 2>/dev/null || echo 0)
-        if (( OBJ_EPOCH > 0 && OBJ_EPOCH < CUTOFF_EPOCH )); then
-          local FULL_KEY="${PREFIX_ARG}${FILENAME}"
-          log "Deleting s3://${S3_BUCKET}/${FULL_KEY}"
-          # shellcheck disable=SC2046
-          aws s3 rm $(s3_args) "s3://${S3_BUCKET}/${FULL_KEY}" \
-            || warn "Failed to delete ${FULL_KEY}"
-        fi
-      done
+  while IFS= read -r line; do
+    [[ "$line" =~ PRE[[:space:]]+([0-9]{8}_[0-9]{6})/ ]] || continue
+    local RUN EPOCH
+    RUN="${BASH_REMATCH[1]}"
+    EPOCH=$(run_folder_to_epoch "$RUN")
+    if (( EPOCH > 0 && EPOCH < CUTOFF_EPOCH )); then
+      log "Deleting run folder s3://${S3_BUCKET}/${PREFIX_ARG}${RUN}/"
+      # shellcheck disable=SC2046
+      aws s3 rm $(s3_args) "s3://${S3_BUCKET}/${PREFIX_ARG}${RUN}/" --recursive \
+        || warn "Failed to delete ${PREFIX_ARG}${RUN}/"
+    fi
+  done < <(aws s3 ls $(s3_args) "s3://${S3_BUCKET}/${PREFIX_ARG}" --delimiter / 2>/dev/null || true)
 }
 
 main "$@"

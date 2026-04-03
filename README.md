@@ -149,12 +149,26 @@ kubectl apply -f k8s/cronjob.yaml
 
 ## Backup layout on S3
 
+Each run uploads **two objects** under a **timestamp folder** (same `TIMESTAMP` as in the filename):
+
+| Object | Purpose |
+| ------ | ------- |
+| `vault-snapshot-<TIMESTAMP>.snap.gz` | Compressed Raft snapshot (the actual backup). |
+| `vault-snapshot-<TIMESTAMP>.snap.gz.sha256` | SHA-256 checksum file for integrity checks on restore. |
+
+Layout:
+
 ```
 s3://BUCKET/S3_PREFIX/
-├── vault-snapshot-20260305_020000.snap.gz
-├── vault-snapshot-20260305_020000.snap.gz.sha256
-├── ...
+├── 20260305_020000/
+│   ├── vault-snapshot-20260305_020000.snap.gz
+│   └── vault-snapshot-20260305_020000.snap.gz.sha256
+├── 20260305_060000/
+│   └── ...
+└── ...
 ```
+
+Retention deletes **whole run folders** when the folder timestamp is older than `RETENTION_S3_DAYS`.
 
 ---
 
@@ -165,6 +179,8 @@ Use the host script (or copy it into a throwaway container with the Vault CLI):
 ```bash
 ./scripts/vault-restore.sh --file /path/to/vault-snapshot-....snap.gz
 ./scripts/vault-restore.sh --latest    # needs S3_* set
+./scripts/vault-restore.sh --s3-key 20260305_020000/vault-snapshot-20260305_020000.snap.gz
+./scripts/vault-restore.sh --s3-key vault-snapshot-20260305_020000.snap.gz   # resolves run folder from name
 ```
 
-See `scripts/vault-restore.sh --help` for `--s3-key` and options.
+See `scripts/vault-restore.sh --help` for other options.
