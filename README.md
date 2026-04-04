@@ -97,12 +97,36 @@ chmod +x scripts/vault-backup.sh scripts/vault-restore.sh
 
 ---
 
+## Vault token (least privilege, not root)
+
+Backup only needs a token that can **read the Raft snapshot** endpoint. You do **not** need the root token.
+
+1. Install the policy (see [`policies/backup-raft.hcl`](policies/backup-raft.hcl)):
+
+   ```bash
+   vault policy write backup-raft policies/backup-raft.hcl
+   ```
+
+2. Create a token (example: **24h periodic**; add **`-orphan`** so it is not revoked when the parent token is):
+
+   ```bash
+   vault token create -policy=backup-raft -period=24h -orphan
+   ```
+
+3. Put the token in `VAULT_TOKEN` or `VAULT_TOKEN_FILE` like any other token. No change to the Docker image or compose file is required.
+
+**Periodic tokens:** Before each period ends, either **renew** (`vault token renew <token>`, requires `auth/token/renew-self` in the policy — included in the sample) or **rotate** the secret (e.g. refresh the Kubernetes Secret / `.env`). Long-lived jobs should use Vault Agent, AppRole, or Kubernetes auth instead of a static periodic token.
+
+**Restore:** `vault-restore.sh` uses `vault operator raft snapshot restore` and needs a **different** policy (much broader than `backup-raft`). Do not use the backup-only token for restore.
+
+---
+
 ## Environment variables
 
 | Variable | Required | Default | Description |
 | -------- | -------- | ------- | ----------- |
 | `VAULT_ADDR` | yes* | `http://127.0.0.1:8200` | Vault API address |
-| `VAULT_TOKEN` | one of token / file | — | Token with permission to take Raft snapshots |
+| `VAULT_TOKEN` | one of token / file | — | Any token with Raft snapshot `read` (e.g. `backup-raft` policy); root not required |
 | `VAULT_TOKEN_FILE` | one of token / file | `/etc/vault/backup-token` | File containing the token |
 | `S3_BUCKET` | no† | — | Bucket name (omit for local-only backup) |
 | `S3_PREFIX` | no | `vault-snapshots` | Key prefix inside the bucket |

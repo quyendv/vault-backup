@@ -15,6 +15,9 @@
 #
 #    Optional keys: S3_PREFIX, RETENTION_LOCAL_DAYS, RETENTION_S3_DAYS, etc.
 #
+#    VAULT_TOKEN: use a least-privilege token (e.g. vault token create -policy=backup-raft -period=24h);
+#    see policies/backup-raft.hcl in the repo — root token is not required.
+#
 # 2) Adjust VAULT_ADDR to your Vault Service DNS name and port.
 #
 # 3) kubectl apply -f cronjob.yaml

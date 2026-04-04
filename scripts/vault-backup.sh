@@ -115,7 +115,9 @@ check_deps() {
 
 check_vault_health() {
   local status
-  status=$(curl -sf "${VAULT_ADDR}/v1/sys/health" 2>/dev/null || echo "{}")
+  local curl_auth=()
+  [[ -n "${VAULT_TOKEN:-}" ]] && curl_auth=(-H "X-Vault-Token: ${VAULT_TOKEN}")
+  status=$(curl -sf "${curl_auth[@]}" "${VAULT_ADDR}/v1/sys/health" 2>/dev/null || echo "{}")
   local initialized sealed
   initialized=$(echo "$status" | grep -o '"initialized":[^,}]*' | cut -d: -f2 | tr -d ' ')
   sealed=$(echo "$status" | grep -o '"sealed":[^,}]*' | cut -d: -f2 | tr -d ' ')
@@ -132,11 +134,12 @@ main() {
   log "Starting Vault backup (dry_run=$DRY_RUN)"
 
   check_deps
-  check_vault_health
 
   local TOKEN
   TOKEN=$(resolve_vault_token)
   export VAULT_TOKEN="$TOKEN"
+
+  check_vault_health
 
   mkdir -p "$BACKUP_DIR"
   local SNAP_PATH="${BACKUP_DIR}/${SNAPSHOT_NAME}"
